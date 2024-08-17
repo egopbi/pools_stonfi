@@ -291,6 +291,7 @@ async def own_ls_test():
 
 async def node_productivity():
     async with LiteClient.from_config(config=config, timeout=15) as client:
+        sleep(5)
         start = time.time()
         print(f'Processes started with time {start}')
 
@@ -311,13 +312,13 @@ async def node_productivity():
                 block_info = (await client.lookup_block(
                     wc=0,
                     shard=-9223372036854775808,
-                    seqno=random.randint(42000000, 45138150)
+                    seqno=random.randint(40000000, 45138150)
                 ))[0]
                 blocks.append(block_info)
            except:
                pass
 
-        block_tasks = [asyncio.create_task(find_block()) for i in range(20)]
+        block_tasks = [asyncio.create_task(find_block()) for i in range(100)]
         await asyncio.gather(*block_tasks)
 
         print(blocks, len(blocks))
@@ -361,7 +362,8 @@ async def node_productivity():
         await asyncio.gather(*trs_detailed_tasks)
 
         trs_detailed_len = len(trs_detailed)
-        print('\n\n', trs_detailed, trs_detailed_len)
+        # print('\n\n', trs_detailed, trs_detailed_len)
+        print(trs_detailed_len)
 
 
         end = time.time()

@@ -1,23 +1,54 @@
+import random
+
 import requests
 import asyncio
 import aiohttp
 import codecs
+import json
+import time
+import itertools
 
 from time import sleep
 from pathlib import Path
 from pytoniq import LiteClient, Contract
+from pytoniq_core import Transaction
 
 mainnet_config_url = 'https://ton.org/global.config.json'
 testnet_config_url = 'https://ton.org/testnet-global.config.json'
 stonfi_api_url = 'https://api.ston.fi/'
 tonapi_url = 'https://tonapi.io/v2/'
 
-# downloading config
-config = requests.get(mainnet_config_url).json()
+with open('ratex_config.json') as f:
+    config = json.loads(f.read())
 
 # create keystore directory for tonlib
 keystore_dir = '/tmp/ton_keystore'
 Path(keystore_dir).mkdir(parents=True, exist_ok=True)
+
+
+def time_decorator(func):
+    def inter(*args, **kwargs):
+        start = time.time()
+        print(f'Processes started with time {start}')
+        result = func(*args, **kwargs)
+        end = time.time()
+        print(f'Processes ended with time {end}')
+        print(f'\n-----Result time is {end - start} seconds-----\n\n')
+        return result
+    return inter
+
+
+def async_time_decorator(func):
+    """ Херово написан, можно дописать на досуге, пока по-старинке """
+    def inter(*args, **kwargs):
+        start = time.time()
+        print(f'Processes started with time {start}')
+        result = asyncio.get_event_loop().run_until_complete(func(*args, **kwargs))
+        end = time.time()
+        print(f'Processes ended with time {end}')
+        print(f'\n-----Result time is {end - start} seconds-----\n\n')
+        return result
+    return inter
 
 
 def decode_bits(bits):
@@ -36,6 +67,8 @@ def decode_bits(bits):
     textik = bytes_data.decode('utf-8')
 
     return textik, bytes_data
+
+
 
 
 def b64str_to_bytes(b64str):
@@ -210,8 +243,8 @@ async def get_token_symbol_from_address(token_add, client: LiteClient):#, proble
 async def pytoniq_pools():
     # with open('problem_tokens.txt', 'a') as file:
         # ToDo закэшировать проблемные токены и выяснить в чем дело
-        async with LiteClient.from_mainnet_config(ls_i=2, trust_level=2) as client:
-
+        # async with LiteClient.from_mainnet_config(ls_i=2, trust_level=2) as client:
+        async with LiteClient.from_config(config=config) as client:
             pools = get_pools_from_stonfi_api()
 
             # ToDo сделать каждый запрос независмым для увеличения скорости работы кода
@@ -243,5 +276,98 @@ async def pytoniq_pools():
                     if token0_sym != '####' and token1_sym != '####':
                         print('Pool is', token0_sym, ' – ', token1_sym)
 
+async def own_ls_test():
+    async with LiteClient.from_config(config=config, timeout=15) as client:
+        start = time.time()
+        a = await client.get_masterchain_info()
+        print(a['last'])
+        end = time.time()
 
-asyncio.run(pytoniq_pools())
+        print(f'Time is {end-start} seconds')
+
+        # trs = await client.get_transactions(address='EQBx_ASjqanfK-L_Msg_tebNEdFpkpDsl9214qgWQnZj6uVm', count=50)
+        # for tr in trs:
+
+
+async def node_productivity():
+    async with LiteClient.from_config(config=config, timeout=15) as client:
+        start = time.time()
+        print(f'Processes started with time {start}')
+
+        # mc_info = await client.ping() #Не обрабатывает запрос, код не перестает работать даже после 150 секунд (хз как)
+
+        # block_info = (await client.lookup_block(
+        #     wc=0,
+        #     shard=-9223372036854775808,
+        #     seqno=random.randint(42000000, 45138150)
+        # ))[0]
+        # print(block_info)
+
+# Теперь создаем список из 20 задач по вытаскиванию рандомного блока из диапазона (42000000, 45138150)
+
+        blocks = []
+        async def find_block():
+           try:
+                block_info = (await client.lookup_block(
+                    wc=0,
+                    shard=-9223372036854775808,
+                    seqno=random.randint(42000000, 45138150)
+                ))[0]
+                blocks.append(block_info)
+           except:
+               pass
+
+        block_tasks = [asyncio.create_task(find_block()) for i in range(20)]
+        await asyncio.gather(*block_tasks)
+
+        print(blocks, len(blocks))
+
+#Вытаскиваем транзакции из каждого блока
+        trs_two_d = []
+        async def find_trs_in_block(block):
+            trs_info = await client.raw_get_block_transactions(block=block)
+            # Создаем список (транзакция, блок)
+            trs_two_d.append([(tr, block) for tr in trs_info])
+
+        trs_tasks = [asyncio.create_task(find_trs_in_block(block)) for block in blocks]
+        await asyncio.gather(*trs_tasks)
+
+        trs = [tr for trans in trs_two_d for tr in trans]
+        # trs = list(itertools.chain(*trs_two_d))
+        # ToDo Необходимо понять, какой способ будет быстрее
+        # trs_count = len(trs)
+        # print('\n\n', trs, trs_count) # На данном этапе list comrehension в два раза быстрее
+
+        # tr = trs[1]
+        # tr_detailed = await client.get_one_transaction(address=tr[0]['account'], lt=tr[0]['lt'], block=tr[1])
+        # print('\n\n', tr_detailed)
+
+        from asyncio import Semaphore
+
+        sem = Semaphore(500)  # Ограничиваем количество одновременных задач
+                              # до 100 2066 trs – 4 seconds
+                              # до 200 2922 – 4.75 seconds
+                              # до 500 2510 – 4.17 seconds
+                              # до 1000 – AssertionError
+                              # до 50 2742 – 7.26 seconds
+
+        trs_detailed = []
+        async def find_tr_detailed(tr):
+            async with sem:
+                tr_detailed = await client.get_one_transaction(address=tr[0]['account'], lt=tr[0]['lt'], block=tr[1])
+                trs_detailed.append(tr_detailed)
+
+        trs_detailed_tasks = [asyncio.create_task(find_tr_detailed(tr)) for tr in trs]
+        await asyncio.gather(*trs_detailed_tasks)
+
+        trs_detailed_len = len(trs_detailed)
+        print('\n\n', trs_detailed, trs_detailed_len)
+
+
+        end = time.time()
+        print(f'Processes ended with time {end}')
+        print(f'\n-----Result time is {end - start} seconds-----')
+        print(f'\n\n-----Bandwidth is {trs_detailed_len/(end - start)} TPS (trs per seconds)-----')
+
+
+asyncio.run(node_productivity())
